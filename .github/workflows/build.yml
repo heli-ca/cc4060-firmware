@@ -144,9 +144,10 @@ jobs:
           grep -n "CC4060" ${{ github.workspace }}/apps/ble_stack/user/le_rcsp_module.c | head -5
           grep -n "CC4060" ${{ github.workspace }}/apps/include/sdk_cfg.h | head -5
 
-      # CRITICAL FIX #2: Correct build command
+      # CRITICAL: Correct build command with all platform variables
       # make -C apps uses apps/Makefile as entry point (has SRCS_C, LIBS, etc.)
-      # MAKE_RULE override points to our rule.mk with compile/link rules
+      # We must pass platform variables from Makefile.br21 since we're not
+      # invoking it directly — without these, OUTPUT_EXES is empty and nothing compiles!
       - name: Build firmware
         run: |
           set -x
@@ -158,10 +159,29 @@ jobs:
           echo "MAKE_RULE: ${{ github.workspace }}/tools/rule.mk"
           echo "Source files: $(grep -c '\.c \\' apps/Makefile) C files"
 
-          # Run make from apps/ directory
-          # All exported vars (CC, LD, CC_ARGS, LD_ARGS, etc.) are inherited
+          # Verify symlink exists
+          ls -la apps/tools/compiler/Makefile.pi32_lto
+
+          # Run make from apps/ directory with all required platform variables
+          # These come from Makefile.br21 and are needed for OUTPUT_EXES, DIR_OUTPUT, etc.
           make -C apps \
             HOST_OS=linux SLASH=/ \
+            ARCH=pi32_lto \
+            PLATFORM=br21 \
+            TYPE=CHIP \
+            NICKNAME=br21_sdk \
+            LE_MODE=FULL_MODE \
+            CODE_SPACE=flash \
+            QLZ_TYPE=NULL \
+            POST_BUILD_DIR=download/post_build/flash \
+            DIR_OUTPUT=download/post_build/flash \
+            EXES=sdk \
+            OUTPUT_EXES=download/post_build/flash/sdk.exe \
+            BUILD_LD=sdk.ld \
+            BUILD_MAP=sdk.map \
+            LINKER="-Tdownload/post_build/flash/sdk.ld -M=download/post_build/flash/sdk.map" \
+            LIBS_PATH=libs \
+            INCLUDE_LIB_PATH=../include_lib \
             MAKE_RULE=${{ github.workspace }}/tools/rule.mk \
             2>&1 | tail -500
 
@@ -169,10 +189,18 @@ jobs:
           ls -la apps/download/post_build/flash/ 2>/dev/null || echo "Output dir NOT FOUND"
           ls -la apps/download/post_build/flash/sdk.exe 2>/dev/null || echo "sdk.exe NOT FOUND"
 
-          # Check if sdk.exe is freshly built (not the 2019 pre-compiled one)
+          # CRITICAL: Verify sdk.exe is freshly built (not the 2019 pre-compiled one)
           if [ -f apps/download/post_build/flash/sdk.exe ]; then
             file apps/download/post_build/flash/sdk.exe
             stat apps/download/post_build/flash/sdk.exe
+            # Check timestamp - should be today, not 2019
+            EXE_DATE=$(stat -c%y apps/download/post_build/flash/sdk.exe 2>/dev/null || stat -f%m apps/download/post_build/flash/sdk.exe)
+            echo "sdk.exe timestamp: $EXE_DATE"
+            if echo "$EXE_DATE" | grep -q "2019"; then
+              echo "ERROR: sdk.exe is still the 2019 pre-compiled version!"
+              echo "The build did NOT recompile the source code."
+              exit 1
+            fi
           fi
 
       - name: Post-build objcopy
