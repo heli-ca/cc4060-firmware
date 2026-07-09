@@ -236,6 +236,27 @@ def patch_sdk_cfg_h(filepath):
     return True
 
 
+def patch_auto_test_c(filepath):
+    """Disable IRQ_REGISTER calls in auto_test.c (incompatible with pi32-clang)"""
+    if not os.path.exists(filepath):
+        print("SKIP: auto_test.c not found")
+        return True
+    with open(filepath, 'r') as f:
+        lines = f.readlines()
+    patched = 0
+    for i, line in enumerate(lines):
+        if 'IRQ_REGISTER(' in line and not line.strip().startswith('//'):
+            lines[i] = '// CC4060: disabled (pi32-clang incompatible with interrupt attribute)\n// ' + line
+            patched += 1
+    if patched > 0:
+        with open(filepath, 'w') as f:
+            f.writelines(lines)
+        print(f"OK: auto_test.c - commented out {patched} IRQ_REGISTER call(s)")
+    else:
+        print("OK: auto_test.c - no IRQ_REGISTER calls found")
+    return True
+
+
 def main():
     sdk_root = sys.argv[1] if len(sys.argv) > 1 else '.'
 
@@ -262,6 +283,11 @@ def main():
     if not patch_le_rcsp_module_c(files['le_rcsp_module.c']):
         ok = False
     if not patch_sdk_cfg_h(files['sdk_cfg.h']):
+        ok = False
+
+    # Patch auto_test.c (not in the files dict, separate path)
+    auto_test_path = os.path.join(sdk_root, 'apps', 'cpu', 'auto_test', 'auto_test.c')
+    if not patch_auto_test_c(auto_test_path):
         ok = False
 
     if not ok:
