@@ -17,126 +17,191 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Debug workspace
+        run: |
+          set -x
+          echo "Workspace: ${{ github.workspace }}"
+          ls -la ${{ github.workspace }}/
+          echo "---"
+          # Check tarball existence and sizes
+          ls -lh ${{ github.workspace }}/pi32v2_toolchain.tar.gz 2>/dev/null || echo "TOOLCHAIN TARBALL MISSING"
+          ls -lh ${{ github.workspace }}/sdk_ac692x.tar.gz 2>/dev/null || echo "SDK TARBALL MISSING"
+          file ${{ github.workspace }}/pi32v2_toolchain.tar.gz 2>/dev/null || true
+          file ${{ github.workspace }}/sdk_ac692x.tar.gz 2>/dev/null || true
+
       - name: Install Wine for Windows tools
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update -qq
           sudo apt-get install -y -qq wine64 2>/dev/null || true
-          wine64 --version || echo "Wine not available, will try alternatives"
+          wine64 --version || echo "Wine not available"
 
       - name: Setup toolchain
         run: |
+          set -x
           sudo mkdir -p /opt/pi32/upstream
-          if [ -f pi32v2_toolchain.tar.gz ]; then
-            sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/upstream
-            echo "Toolchain extracted"
-          else
-            echo "ERROR: pi32v2_toolchain.tar.gz not found"
-            ls -la
-            exit 1
+          
+          # Extract toolchain
+          cd ${{ github.workspace }}
+          tar -tzf pi32v2_toolchain.tar.gz | head -20
+          echo "---"
+          sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/upstream
+          
+          # Check if there's a top-level directory
+          FIRST_DIR=$(tar -tzf pi32v2_toolchain.tar.gz | head -1 | cut -d/ -f1)
+          echo "First directory in tarball: $FIRST_DIR"
+          
+          # If tarball has a top-level dir like pi32v2_toolchain/, move contents up
+          if [ -d "/opt/pi32/upstream/$FIRST_DIR" ] && [ "$FIRST_DIR" != "bin" ] && [ "$FIRST_DIR" != "lib" ] && [ "$FIRST_DIR" != "include" ]; then
+            echo "Moving contents of /opt/pi32/upstream/$FIRST_DIR/ up one level"
+            sudo mv /opt/pi32/upstream/$FIRST_DIR/* /opt/pi32/upstream/ 2>/dev/null || true
+            sudo mv /opt/pi32/upstream/$FIRST_DIR/.* /opt/pi32/upstream/ 2>/dev/null || true
+            sudo rmdir /opt/pi32/upstream/$FIRST_DIR 2>/dev/null || true
           fi
-          ls -la /opt/pi32/upstream/bin/
-          file /opt/pi32/upstream/bin/clang || true
+          
+          echo "=== Toolchain layout ==="
+          ls -la /opt/pi32/upstream/
+          ls -la /opt/pi32/upstream/bin/ || echo "bin/ not found!"
+          file /opt/pi32/upstream/bin/clang 2>/dev/null || echo "clang not found!"
+          file /opt/pi32/upstream/bin/pi32-clang 2>/dev/null || echo "pi32-clang not found!"
 
       - name: Extract SDK source
         run: |
-          if [ -f sdk_ac692x.tar.gz ]; then
-            tar xzf sdk_ac692x.tar.gz -C ${{ github.workspace }}
-            echo "SDK extracted"
+          set -x
+          cd ${{ github.workspace }}
+          
+          # Check tarball structure
+          tar -tzf sdk_ac692x.tar.gz | head -20
+          echo "---"
+          
+          tar xzf sdk_ac692x.tar.gz -C ${{ github.workspace }}
+          
+          # Check if SDK extracted with a top-level directory
+          if [ -d "${{ github.workspace }}/apps" ]; then
+            echo "SDK extracted flat (apps/ at workspace root)"
           else
-            echo "ERROR: sdk_ac692x.tar.gz not found"
-            ls -la
-            exit 1
+            # Find the actual SDK root
+            FIRST_DIR=$(tar -tzf sdk_ac692x.tar.gz | head -1 | cut -d/ -f1)
+            echo "SDK extracted to: $FIRST_DIR"
+            if [ -d "${{ github.workspace }}/$FIRST_DIR/apps" ]; then
+              echo "Moving SDK contents to workspace root"
+              mv ${{ github.workspace }}/$FIRST_DIR/* ${{ github.workspace }}/ 2>/dev/null || true
+              mv ${{ github.workspace }}/$FIRST_DIR/.* ${{ github.workspace }}/ 2>/dev/null || true
+              rmdir ${{ github.workspace }}/$FIRST_DIR 2>/dev/null || true
+            fi
           fi
+          
+          echo "=== SDK layout ==="
           ls -la ${{ github.workspace }}/apps/ | head -20
+          ls ${{ github.workspace }}/tools/ | head -10
 
       - name: Install build rules
         run: |
+          set -x
           cp tools/rule.mk ${{ github.workspace }}/tools/rule.mk
           echo "rule.mk installed"
           cat ${{ github.workspace }}/tools/rule.mk
 
       - name: Apply CC4060 UART bridge patch
         run: |
+          set -x
           python3 tools/cc4060_patch.py ${{ github.workspace }}
+          
+          echo "=== Verify patches ==="
+          grep -n "CC4060" ${{ github.workspace }}/apps/cpu/uart/uart.c | head -5
+          grep -n "CC4060" ${{ github.workspace }}/apps/ble_stack/user/le_rcsp_module.c | head -5
+          grep -n "CC4060" ${{ github.workspace }}/apps/include/sdk_cfg.h | head -5
 
       - name: Build firmware
         run: |
+          set -x
           cd ${{ github.workspace }}
+          
+          echo "=== Starting build ==="
+          echo "Make version: $(make --version | head -1)"
+          echo "Working dir: $(pwd)"
+          
           make HOST_OS=linux SLASH=/ \
             -f tools/platform/Makefile.br21 \
-            2>&1 | tail -200
-        continue-on-error: false
+            2>&1 | tail -300
+          
+          echo "=== Build output ==="
+          ls -la apps/download/post_build/flash/sdk.exe 2>/dev/null || echo "sdk.exe NOT FOUND"
 
       - name: Post-build objcopy
         run: |
+          set -x
           OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
           cd "$OUTPUT_DIR"
-
-          if [ ! -f sdk.exe ]; then
-            echo "ERROR: sdk.exe not found"
-            ls -la
-            exit 1
-          fi
-
+          
           OBJCOPY=/opt/pi32/upstream/bin/objcopy
           $OBJCOPY -O binary -j .text  sdk.exe sdk.bin
           $OBJCOPY -O binary -j .data  sdk.exe data.bin
           $OBJCOPY -O binary -j .nvdata sdk.exe nvdata.bin
           cat sdk.bin data.bin nvdata.bin > sdk.app
           echo "sdk.app size: $(stat -c%s sdk.app) bytes"
-          ls -la sdk.app sdk.exe
+          ls -la sdk.app
 
       - name: Generate firmware image with isd_download
         run: |
+          set -x
           OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
           cd "$OUTPUT_DIR"
-
-          ISD_EXE="$OUTPUT_DIR/tool_resource/dev_ota/isd_download.exe"
-          if [ ! -f "$ISD_EXE" ]; then
+          
+          # Find isd_download.exe
+          ISD_EXE=""
+          for p in "$OUTPUT_DIR/tool_resource/dev_ota/isd_download.exe" \
+                   "${{ github.workspace }}/tools/resource/dev_ota/isd_download.exe"; do
+            if [ -f "$p" ]; then ISD_EXE="$p"; break; fi
+          done
+          if [ -z "$ISD_EXE" ]; then
             ISD_EXE=$(find ${{ github.workspace }} -name "isd_download.exe" 2>/dev/null | head -1)
           fi
-
+          
           if [ -z "$ISD_EXE" ] || [ ! -f "$ISD_EXE" ]; then
             echo "ERROR: isd_download.exe not found"
+            find ${{ github.workspace }} -name "*.exe" 2>/dev/null | head -20
             exit 1
           fi
-
+          
           echo "Using: $ISD_EXE"
-
+          ls -la "$ISD_EXE"
+          
+          # Build resource list
           RESOURCES=""
           for f in bt.mp3 music.mp3 linein.mp3 radio.mp3 connect.mp3 disconnect.mp3 \
                    ring.mp3 warning.mp3 power_off.mp3 0.mp3 1.mp3 2.mp3 3.mp3 4.mp3 \
                    5.mp3 6.mp3 7.mp3 8.mp3 9.mp3 start.mp3; do
             [ -f "$f" ] && RESOURCES="$RESOURCES $f"
           done
-
+          echo "Resources: $RESOURCES"
+          
           wine64 "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
             -format cfg -f uboot.boot sdk.app bt_cfg.bin $RESOURCES 2>&1 || {
-            echo "isd_download via wine64 failed, trying wine..."
+            echo "wine64 failed, trying wine..."
             wine "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
               -format cfg -f uboot.boot sdk.app bt_cfg.bin $RESOURCES 2>&1 || true
           }
-
-          if [ -f jl_isd.bin ]; then
-            echo "jl_isd.bin created: $(stat -c%s jl_isd.bin) bytes"
-          else
-            echo "ERROR: jl_isd.bin not generated"
+          
+          ls -la jl_isd.bin 2>/dev/null || echo "jl_isd.bin NOT FOUND"
+          if [ ! -f jl_isd.bin ]; then
+            echo "Listing all files in output dir:"
             ls -la
             exit 1
           fi
 
       - name: Package BFU firmware
         run: |
+          set -x
           OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
           cd "$OUTPUT_DIR"
-
+          
           BFU_BUILDER=${{ github.workspace }}/tools/bfu_builder.py
           if [ -f "$BFU_BUILDER" ]; then
             python3 "$BFU_BUILDER" build jl_isd.bin updata.bfu
           else
-            BFUMAKE="$OUTPUT_DIR/tool_resource/dev_ota/bfumake.exe"
-            if [ -f "$BFUMAKE" ]; then
+            BFUMAKE=$(find ${{ github.workspace }} -name "bfumake.exe" 2>/dev/null | head -1)
+            if [ -n "$BFUMAKE" ] && [ -f "$BFUMAKE" ]; then
               wine64 "$BFUMAKE" -fi jl_isd.bin -ld 0x0000 -rd 0x0000 -fo updata.bfu || \
               wine "$BFUMAKE" -fi jl_isd.bin -ld 0x0000 -rd 0x0000 -fo updata.bfu
             else
@@ -144,16 +209,15 @@ jobs:
               exit 1
             fi
           fi
-
-          echo "Final firmware:"
+          
+          echo "=== Final firmware ==="
           ls -la updata.bfu
-          file updata.bfu || true
           xxd updata.bfu | head -5
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: updata.bfu
+          name: updata-bfu
           path: ${{ github.workspace }}/apps/download/post_build/flash/updata.bfu
           retention-days: 30
 
@@ -164,5 +228,6 @@ jobs:
           name: build-logs
           path: |
             ${{ github.workspace }}/apps/download/post_build/flash/sdk.map
-            ${{ github.workspace }}/apps/download/post_build/flash/sdk.ld
+            ${{ github.workspace }}/apps/download/post_build/flash/sdk.exe
+            ${{ github.workspace }}/apps/download/post_build/flash/sdk.app
           retention-days: 7
