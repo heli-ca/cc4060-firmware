@@ -137,20 +137,26 @@ def patch_le_rcsp_module_c(filepath):
     with open(filepath, 'r') as f:
         content = f.read()
 
-    # ---- Block 1: Extern declarations (NO #ifdef guard) ----
+    # ---- Block 1: Extern declarations at TOP of file (after last #include) ----
     extern_block = r"""
 /* ========== CC4060 BRIDGE EXTERN BEGIN ========== */
 extern void cc4060_uart_bridge_send(const u8 *data, u16 len);
 extern void cc4060_uart_bridge_poll(void);
 extern void cc4060_uart_bridge_init(void);
 /* ========== CC4060 BRIDGE EXTERN END ========== */
-
 """
-    anchor1 = "const u8 link_key_data[16]"
-    if anchor1 not in content:
-        print("ERROR: Cannot find link_key_data in le_rcsp_module.c")
+    # Find the LAST #include line and insert after it
+    lines = content.split('\n')
+    last_include_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith('#include'):
+            last_include_idx = i
+    if last_include_idx == -1:
+        print("ERROR: Cannot find any #include in le_rcsp_module.c")
         return False
-    content = content.replace(anchor1, extern_block + anchor1)
+    # Insert extern block after the last #include line
+    lines.insert(last_include_idx + 1, extern_block)
+    content = '\n'.join(lines)
 
     # ---- Block 2: Redirect BLE ae01 writes to UART bridge (NO #ifdef guard) ----
     old_code = """\t\t\tif (app_recieve_callback) {
