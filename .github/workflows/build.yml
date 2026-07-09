@@ -57,15 +57,22 @@ jobs:
           echo "---"
           sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/upstream
           
-          # Check if there's a top-level directory
-          FIRST_DIR=$(tar -tzf pi32v2_toolchain.tar.gz | head -1 | cut -d/ -f1)
-          echo "First directory in tarball: $FIRST_DIR"
+          # CRITICAL: Remove macOS AppleDouble ._ metadata files first
+          # These pollute the tarball and break directory detection
+          echo "=== Cleaning macOS metadata files ==="
+          sudo find /opt/pi32/upstream -name '._*' -type f -delete 2>/dev/null || true
+          sudo find /opt/pi32/upstream -name '._*' -type d -delete 2>/dev/null || true
+          echo "Cleaned. Remaining contents:"
+          ls -la /opt/pi32/upstream/
           
-          # If tarball has a top-level dir like pi32v2_toolchain/, move contents up
+          # Find the real top-level directory (skip ._ files)
+          FIRST_DIR=$(tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | head -1 | cut -d/ -f1)
+          echo "First real directory in tarball: $FIRST_DIR"
+          
+          # If tarball has a top-level dir like pi32v2/, move contents up
           if [ -d "/opt/pi32/upstream/$FIRST_DIR" ] && [ "$FIRST_DIR" != "bin" ] && [ "$FIRST_DIR" != "lib" ] && [ "$FIRST_DIR" != "include" ]; then
             echo "Moving contents of /opt/pi32/upstream/$FIRST_DIR/ up one level"
             sudo mv /opt/pi32/upstream/$FIRST_DIR/* /opt/pi32/upstream/ 2>/dev/null || true
-            sudo mv /opt/pi32/upstream/$FIRST_DIR/.* /opt/pi32/upstream/ 2>/dev/null || true
             sudo rmdir /opt/pi32/upstream/$FIRST_DIR 2>/dev/null || true
           fi
           
@@ -74,10 +81,10 @@ jobs:
           ls -la /opt/pi32/upstream/bin/ || echo "bin/ not found!"
           
           echo "=== All toolchain binaries ==="
-          find /opt/pi32 -type f -executable 2>/dev/null | sort
+          find /opt/pi32 -type f -executable -not -name '._*' 2>/dev/null | sort
           
           file /opt/pi32/upstream/bin/clang 2>/dev/null || echo "clang not found!"
-          file /opt/pi32/upstream/bin/pi32-clang 2>/dev/null || echo "pi32-clang not found!"
+          file /opt/pi32/upstream/bin/objcopy 2>/dev/null || echo "objcopy not found!"
 
       - name: Extract SDK source
         run: |
@@ -182,9 +189,9 @@ jobs:
             fi
           done
           
-          # Fallback: search everywhere under /opt/pi32
+          # Fallback: search everywhere under /opt/pi32 (exclude macOS ._ files)
           if [ -z "$OBJCOPY" ]; then
-            OBJCOPY=$(find /opt/pi32 -name "*objcopy*" -type f 2>/dev/null | head -1)
+            OBJCOPY=$(find /opt/pi32 -name "*objcopy*" -type f -not -name '._*' 2>/dev/null | head -1)
           fi
           
           if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
