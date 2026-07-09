@@ -45,6 +45,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq wine64 2>/dev/null || true
           wine64 --version || echo "Wine not available"
+          
+          # Install LLVM tools (includes llvm-objcopy for ELF processing)
+          sudo apt-get install -y -qq llvm 2>/dev/null || true
+          llvm-objcopy --version 2>/dev/null || echo "llvm-objcopy not available"
 
       - name: Setup toolchain
         run: |
@@ -176,42 +180,101 @@ jobs:
           ls -la sdk.exe
           file sdk.exe
           
-          # Find objcopy dynamically - could be at various paths depending on tarball structure
+          # Try llvm-objcopy first (installed via apt), then toolchain's objcopy
           OBJCOPY=""
-          for candidate in \
-            /opt/pi32/upstream/bin/objcopy \
-            /opt/pi32/upstream/bin/pi32-objcopy \
-            /opt/pi32/bin/objcopy \
-            /opt/pi32/bin/pi32-objcopy; do
-            if [ -x "$candidate" ]; then
-              OBJCOPY="$candidate"
-              break
+          if command -v llvm-objcopy &>/dev/null; then
+            OBJCOPY="llvm-objcopy"
+            echo "Using llvm-objcopy from system"
+          else
+            # Search toolchain
+            for candidate in /opt/pi32/upstream/bin/objcopy /opt/pi32/upstream/bin/pi32-objcopy; do
+              if [ -x "$candidate" ]; then OBJCOPY="$candidate"; break; fi
+            done
+            if [ -z "$OBJCOPY" ]; then
+              OBJCOPY=$(find /opt/pi32 -name "*objcopy*" -type f -not -name '._*' 2>/dev/null | head -1)
             fi
-          done
-          
-          # Fallback: search everywhere under /opt/pi32 (exclude macOS ._ files)
-          if [ -z "$OBJCOPY" ]; then
-            OBJCOPY=$(find /opt/pi32 -name "*objcopy*" -type f -not -name '._*' 2>/dev/null | head -1)
           fi
           
-          if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
-            echo "ERROR: objcopy not found in toolchain!"
-            echo "Toolchain contents:"
-            find /opt/pi32 -type f 2>/dev/null | sort
-            exit 1
+          if [ -n "$OBJCOPY" ] && command -v "$OBJCOPY" &>/dev/null || [ -x "$OBJCOPY" ]; then
+            echo "Using objcopy: $OBJCOPY"
+            $OBJCOPY -O binary -j .text  sdk.exe sdk.bin 2>&1 || true
+            $OBJCOPY -O binary -j .data  sdk.exe data.bin 2>&1 || true
+            $OBJCOPY -O binary -j .nvdata sdk.exe nvdata.bin 2>&1 || true
+          else
+            echo "No objcopy available, using Python ELF parser"
+            python3 -c "
+          import struct, sys
+          
+          def extract_elf_sections(filename):
+              with open(filename, 'rb') as f:
+                  data = f.read()
+              
+              # ELF header
+              if data[:4] != b'\x7fELF':
+                  print('Not an ELF file!')
+                  sys.exit(1)
+              
+              ei_class = data[4]  # 1=32bit, 2=64bit
+              ei_data = data[5]   # 1=LE, 2=BE
+              
+              if ei_class == 1:  # 32-bit
+                  e_shoff = struct.unpack_from('<I', data, 32)[0]
+                  e_shentsize = struct.unpack_from('<H', data, 46)[0]
+                  e_shnum = struct.unpack_from('<H', data, 48)[0]
+                  e_shstrndx = struct.unpack_from('<H', data, 50)[0]
+              else:
+                  e_shoff = struct.unpack_from('<Q', data, 40)[0]
+                  e_shentsize = struct.unpack_from('<H', data, 58)[0]
+                  e_shnum = struct.unpack_from('<H', data, 60)[0]
+                  e_shstrndx = struct.unpack_from('<H', data, 62)[0]
+              
+              # Read section headers
+              sections = {}
+              for i in range(e_shnum):
+                  off = e_shoff + i * e_shentsize
+                  if ei_class == 1:
+                      sh_name = struct.unpack_from('<I', data, off)[0]
+                      sh_type = struct.unpack_from('<I', data, off+4)[0]
+                      sh_offset = struct.unpack_from('<I', data, off+16)[0]
+                      sh_size = struct.unpack_from('<I', data, off+20)[0]
+                  else:
+                      sh_name = struct.unpack_from('<I', data, off)[0]
+                      sh_type = struct.unpack_from('<I', data, off+4)[0]
+                      sh_offset = struct.unpack_from('<Q', data, off+24)[0]
+                      sh_size = struct.unpack_from('<Q', data, off+32)[0]
+                  sections[i] = {'name_off': sh_name, 'type': sh_type, 'offset': sh_offset, 'size': sh_size}
+              
+              # Read section name string table
+              strtab = sections[e_shstrndx]
+              strtab_data = data[strtab['offset']:strtab['offset']+strtab['size']]
+              
+              # Resolve names and extract target sections
+              result = {}
+              for idx, sec in sections.items():
+                  name_end = strtab_data.find(b'\x00', sec['name_off'])
+                  name = strtab_data[sec['name_off']:name_end].decode('ascii', errors='replace')
+                  if name in ('.text', '.data', '.nvdata'):
+                      section_data = data[sec['offset']:sec['offset']+sec['size']]
+                      result[name] = section_data
+                      print(f'  {name}: {len(section_data)} bytes at offset 0x{sec[\"offset\"]:x}')
+              
+              return result
+          
+          sections = extract_elf_sections('sdk.exe')
+          
+          if '.text' in sections:
+              with open('sdk.bin', 'wb') as f:
+                  f.write(sections['.text'])
+          if '.data' in sections:
+              with open('data.bin', 'wb') as f:
+                  f.write(sections['.data'])
+          if '.nvdata' in sections:
+              with open('nvdata.bin', 'wb') as f:
+                  f.write(sections['.nvdata'])
+          
+          print(f'Extracted sections: {list(sections.keys())}')
+            "
           fi
-          
-          echo "Using objcopy: $OBJCOPY"
-          file "$OBJCOPY"
-          
-          # Extract sections
-          $OBJCOPY -O binary -j .text  sdk.exe sdk.bin 2>&1 || {
-            echo "objcopy .text failed, trying alternative approach..."
-            # Some objcopy versions need different flags for ELF64
-            $OBJCOPY -O binary --only-section=.text sdk.exe sdk.bin
-          }
-          $OBJCOPY -O binary -j .data  sdk.exe data.bin 2>&1 || true
-          $OBJCOPY -O binary -j .nvdata sdk.exe nvdata.bin 2>&1 || true
           
           # Combine into sdk.app
           cat sdk.bin data.bin nvdata.bin > sdk.app 2>/dev/null || cat sdk.bin > sdk.app
