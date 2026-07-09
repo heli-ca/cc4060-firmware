@@ -16,15 +16,10 @@ def patch_uart_c(filepath):
     with open(filepath, 'r') as f:
         content = f.read()
 
-    # Ensure CC4060_UART_BRIDGE_EN is defined in this file
-    if '#define CC4060_UART_BRIDGE_EN' not in content:
-        content = '#define CC4060_UART_BRIDGE_EN 1\n' + content
-
-    # ---- Block 1: CC4060 bridge implementation ----
-    # Insert after #endif //end of UART update, before void uart_module_init()
+    # ---- Block 1: CC4060 bridge implementation (unconditional) ----
+    # Insert before void uart_module_init()
     cc4060_block = r"""
 /* ========== CC4060 UART BRIDGE BEGIN ========== */
-#ifdef CC4060_UART_BRIDGE_EN
 
 #define CC4060_RING_BUF_SIZE 512
 static volatile u8 cc4060_ring_buf[CC4060_RING_BUF_SIZE];
@@ -110,7 +105,6 @@ void cc4060_uart_bridge_poll(void)
     }
 }
 
-#endif /* CC4060_UART_BRIDGE_EN */
 /* ========== CC4060 UART BRIDGE END ========== */
 """
 
@@ -124,9 +118,7 @@ void cc4060_uart_bridge_poll(void)
     # ---- Block 2: Enable CC4060 bridge init in uart_module_init() ----
     # Insert after #endif //end of UART update, before /* uart1_rtx_cts(); */
     init_block = r"""
-#if CC4060_UART_BRIDGE_EN
     cc4060_uart_bridge_init();
-#endif
 """
     anchor2 = "    /* uart1_rtx_cts(); */"
     if anchor2 not in content:
@@ -145,20 +137,12 @@ def patch_le_rcsp_module_c(filepath):
     with open(filepath, 'r') as f:
         content = f.read()
 
-    # ---- Block 0: Ensure CC4060_UART_BRIDGE_EN is defined in this file ----
-    # le_rcsp_module.c may not include sdk_cfg.h, so we add the define directly
-    if '#define CC4060_UART_BRIDGE_EN' not in content:
-        content = '#define CC4060_UART_BRIDGE_EN 1\n' + content
-
-    # ---- Block 1: Extern declarations ----
-    # Insert before const u8 link_key_data[16]
+    # ---- Block 1: Extern declarations (NO #ifdef guard) ----
     extern_block = r"""
 /* ========== CC4060 BRIDGE EXTERN BEGIN ========== */
-#ifdef CC4060_UART_BRIDGE_EN
 extern void cc4060_uart_bridge_send(const u8 *data, u16 len);
 extern void cc4060_uart_bridge_poll(void);
 extern void cc4060_uart_bridge_init(void);
-#endif
 /* ========== CC4060 BRIDGE EXTERN END ========== */
 
 """
@@ -168,22 +152,14 @@ extern void cc4060_uart_bridge_init(void);
         return False
     content = content.replace(anchor1, extern_block + anchor1)
 
-    # ---- Block 2: Redirect BLE ae01 writes to UART bridge ----
-    # In app_write_revieve_data(), replace the RCSP callback with bridge send
+    # ---- Block 2: Redirect BLE ae01 writes to UART bridge (NO #ifdef guard) ----
     old_code = """\t\t\tif (app_recieve_callback) {
 \t\t\t\tapp_recieve_callback((void *)channel_priv, data, len);
 \t\t\t}"""
 
-    new_code = """\t\t\t#ifdef CC4060_UART_BRIDGE_EN
-\t\t\tcc4060_uart_bridge_send(data, len);
-\t\t\t#else
-\t\t\tif (app_recieve_callback) {
-\t\t\t\tapp_recieve_callback((void *)channel_priv, data, len);
-\t\t\t}
-\t\t\t#endif"""
+    new_code = """\t\t\tcc4060_uart_bridge_send(data, len); /* CC4060: redirect to UART */"""
 
     if old_code not in content:
-        # Try with spaces instead of tabs
         old_code_spaces = old_code.replace('\t', '    ')
         if old_code_spaces in content:
             new_code_spaces = new_code.replace('\t', '    ')
@@ -191,25 +167,22 @@ extern void cc4060_uart_bridge_init(void);
         else:
             print("WARNING: Cannot find app_recieve_callback block in app_write_revieve_data()")
             print("Trying line-by-line search...")
-            # Fallback: search for the key line
             key_line = "app_recieve_callback((void *)channel_priv, data, len);"
             if key_line not in content:
                 print("ERROR: Cannot find app_recieve_callback call at all")
                 return False
-            # Wrap just the callback line
             content = content.replace(
                 key_line,
-                "#ifdef CC4060_UART_BRIDGE_EN\n\t\t\tcc4060_uart_bridge_send(data, len);\n#else\n\t\t\t" + key_line + "\n#endif"
+                "cc4060_uart_bridge_send(data, len); /* CC4060: redirect to UART */"
             )
     else:
         content = content.replace(old_code, new_code)
 
-    # ---- Block 3: Add UART bridge poll call in server_thread_process ----
-    # Insert poll call at the beginning of server_thread_process
+    # ---- Block 3: Add UART bridge poll call (NO #ifdef guard) ----
     anchor3 = "if (!mini_cbuf_is_emtpy(&act_cmd_mctl))"
-    poll_block = "#ifdef CC4060_UART_BRIDGE_EN\n    cc4060_uart_bridge_poll();\n#endif\n    "
+    poll_call = "cc4060_uart_bridge_poll(); /* CC4060 */\n    "
     if anchor3 in content:
-        content = content.replace(anchor3, poll_block + anchor3)
+        content = content.replace(anchor3, poll_call + anchor3)
     else:
         print("WARNING: Cannot find server_thread_process anchor, poll won't be called")
 
