@@ -5,6 +5,10 @@
 # All source paths in SRCS_C are relative to apps/
 # All relative paths (../include_lib/, etc.) resolve from apps/
 
+# ---- Include SDK compiler Makefile for CC, LD, CC_ARGS, etc. ----
+# This defines the pi32-clang compiler path, flags, include paths, and linker settings
+-include tools/compiler/Makefile.pi32_lto
+
 # ---- Object files (compiled from SRCS_C defined in apps/Makefile) ----
 OBJS = $(addprefix $(DIR_OUTPUT)/obj/, $(patsubst %.c,%.o, $(SRCS_C)))
 
