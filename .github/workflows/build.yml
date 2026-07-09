@@ -162,6 +162,18 @@ jobs:
           # Verify symlink exists
           ls -la apps/tools/compiler/Makefile.pi32_lto
 
+          # CRITICAL: Delete pre-compiled SDK output files (from 2019) so make rebuilds from source
+          # Without this, make sees sdk.exe already exists and skips compilation entirely
+          echo "=== Removing pre-compiled SDK files ==="
+          rm -f apps/download/post_build/flash/sdk.exe
+          rm -f apps/download/post_build/flash/sdk.app
+          rm -f apps/download/post_build/flash/sdk.bin
+          rm -f apps/download/post_build/flash/data.bin
+          rm -f apps/download/post_build/flash/nvdata.bin
+          rm -f apps/download/post_build/flash/sdk.map
+          rm -rf apps/download/post_build/flash/obj
+          echo "Pre-compiled files removed. make will rebuild from source."
+
           # Run make from apps/ directory with all required platform variables
           # These come from Makefile.br21 and are needed for OUTPUT_EXES, DIR_OUTPUT, etc.
           make -C apps \
