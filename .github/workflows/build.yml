@@ -192,6 +192,49 @@ jobs:
           grep -n "CC4060" ${{ github.workspace }}/apps/ble_stack/user/le_rcsp_module.c | head -5
           grep -n "CC4060" ${{ github.workspace }}/apps/include/sdk_cfg.h | head -5
 
+      - name: Diagnose pre-compiled libraries
+        run: |
+          set -x
+          cd ${{ github.workspace }}
+
+          echo "=== Library files in include_lib/ ==="
+          ls -la include_lib/*.a 2>/dev/null | head -20
+          ls -la include_lib/**/*.a 2>/dev/null | head -20
+
+          echo "=== bluetooth_lib.a details ==="
+          file include_lib/bluetooth_lib.a 2>/dev/null || echo "bluetooth_lib.a not found at root"
+          find . -name "bluetooth_lib.a" -type f 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            ls -la "$f"
+            file "$f"
+            # Show first .o file format inside the archive
+            /opt/pi32/upstream/bin/ar t "$f" 2>/dev/null | head -5 || echo "ar failed"
+          done
+
+          echo "=== Check object format inside bluetooth_lib.a ==="
+          BT_LIB=$(find . -name "bluetooth_lib.a" -type f 2>/dev/null | head -1)
+          if [ -n "$BT_LIB" ]; then
+            # Extract one .o to check format
+            cd $(dirname "$BT_LIB")
+            /opt/pi32/upstream/bin/ar x $(basename "$BT_LIB") bigint_mul_core_bc51.o 2>/dev/null || true
+            if [ -f bigint_mul_core_bc51.o ]; then
+              file bigint_mul_core_bc51.o
+              xxd bigint_mul_core_bc51.o | head -5
+              ls -la bigint_mul_core_bc51.o
+              rm -f bigint_mul_core_bc51.o
+            fi
+            cd ${{ github.workspace }}
+          fi
+
+          echo "=== Toolchain clang target info ==="
+          /opt/pi32/upstream/bin/pi32-clang --version 2>&1 || true
+          echo "---"
+          # Check what format clang produces
+          echo "int x;" > /tmp/test.c
+          /opt/pi32/upstream/bin/pi32-clang -target pi32 -c /tmp/test.c -o /tmp/test.o 2>&1 || true
+          file /tmp/test.o 2>/dev/null || echo "test.o not created"
+          xxd /tmp/test.o 2>/dev/null | head -3 || true
+
       # CRITICAL: Correct build command with all platform variables
       # make -C apps uses apps/Makefile as entry point (has SRCS_C, LIBS, etc.)
       # We must pass platform variables from Makefile.br21 since we're not
