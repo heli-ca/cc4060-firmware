@@ -53,40 +53,43 @@ jobs:
       - name: Setup toolchain
         run: |
           set -x
-          sudo mkdir -p /opt/pi32/upstream
+          # CRITICAL: Tarball contains pi32v2/ and common/ as siblings.
+          # pi32v2/bin/clang is a symlink -> ../../common/bin/clang
+          # For this to resolve: pi32v2/bin -> ../../common/bin
+          #   /opt/pi32/pi32v2/bin/clang -> ../../common/bin/clang = /opt/pi32/common/bin/clang ✓
+          # So we must extract to /opt/pi32/ (NOT /opt/pi32/upstream/) to keep them as siblings.
+          sudo mkdir -p /opt/pi32
 
           cd ${{ github.workspace }}
-          tar -tzf pi32v2_toolchain.tar.gz | head -20
+          echo "=== Tarball top-level entries ==="
+          tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | grep -E '^[^/]+/?$' | sort -u
           echo "---"
-          sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/upstream
+
+          # Extract to /opt/pi32/ so pi32v2/ and common/ are siblings
+          sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/
 
           # Remove macOS AppleDouble ._ metadata files
           echo "=== Cleaning macOS metadata files ==="
-          sudo find /opt/pi32/upstream -name '._*' -type f -delete 2>/dev/null || true
-          sudo find /opt/pi32/upstream -name '._*' -type d -delete 2>/dev/null || true
+          sudo find /opt/pi32 -name '._*' -type f -delete 2>/dev/null || true
+          sudo find /opt/pi32 -name '._*' -type d -delete 2>/dev/null || true
 
-          # Find the real top-level directory
-          FIRST_DIR=$(tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | head -1 | cut -d/ -f1)
-          echo "First real directory in tarball: $FIRST_DIR"
-
-          if [ -d "/opt/pi32/upstream/$FIRST_DIR" ] && [ "$FIRST_DIR" != "bin" ] && [ "$FIRST_DIR" != "lib" ] && [ "$FIRST_DIR" != "include" ]; then
-            echo "Moving contents of /opt/pi32/upstream/$FIRST_DIR/ up one level"
-            sudo mv /opt/pi32/upstream/$FIRST_DIR/* /opt/pi32/upstream/ 2>/dev/null || true
-            sudo rmdir /opt/pi32/upstream/$FIRST_DIR 2>/dev/null || true
-          fi
+          # Create 'upstream' symlink -> pi32v2 for compatibility with rest of workflow
+          sudo ln -sf pi32v2 /opt/pi32/upstream
+          echo "=== /opt/pi32/upstream -> pi32v2 ==="
+          ls -la /opt/pi32/upstream
 
           echo "=== Toolchain layout ==="
+          ls -la /opt/pi32/
           ls -la /opt/pi32/upstream/
           ls -la /opt/pi32/upstream/bin/ || echo "bin/ not found!"
-          find /opt/pi32 -type f -executable -not -name '._*' 2>/dev/null | sort
-          file /opt/pi32/upstream/bin/clang 2>/dev/null || echo "clang not found!"
+          ls -la /opt/pi32/common/bin/ || echo "common/bin/ not found!"
 
-          # CRITICAL: Check if common/ directory exists in tarball
-          echo "=== Checking for common/ directory in tarball ==="
-          tar -tzf pi32v2_toolchain.tar.gz | grep -i common | head -20 || echo "No common/ in tarball"
-          tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | cut -d/ -f1 | sort -u
-          echo "=== All top-level entries in tarball ==="
-          tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | grep -E '^[^/]+/?$' | sort -u || true
+          # Verify clang symlink resolves correctly
+          echo "=== Verifying clang symlink chain ==="
+          echo "pi32v2/bin/clang symlink target: $(readlink /opt/pi32/pi32v2/bin/clang 2>/dev/null || echo 'N/A')"
+          echo "Resolved path: $(readlink -f /opt/pi32/upstream/bin/clang 2>/dev/null || echo 'N/A')"
+          file /opt/pi32/common/bin/clang 2>/dev/null || echo "common/bin/clang NOT FOUND!"
+          file /opt/pi32/upstream/bin/clang 2>/dev/null || echo "upstream/bin/clang NOT accessible!"
 
           # Show cc wrapper script contents
           echo "=== cc wrapper script ==="
@@ -102,10 +105,9 @@ jobs:
           echo "=== Broken symlinks in toolchain ==="
           find /opt/pi32/upstream -xtype l 2>/dev/null || true
 
-          # FIX: Create pi32-clang wrapper if it doesn't exist
+          # Create pi32-clang wrapper if it doesn't exist
           if [ ! -f /opt/pi32/upstream/bin/pi32-clang ] && [ ! -L /opt/pi32/upstream/bin/pi32-clang ]; then
             echo "=== Creating pi32-clang wrapper ==="
-            # Check if cc is a working wrapper script
             if file /opt/pi32/upstream/bin/cc | grep -q "script\|text"; then
               echo "cc is a script, creating pi32-clang as copy of cc"
               sudo cp /opt/pi32/upstream/bin/cc /opt/pi32/upstream/bin/pi32-clang
@@ -117,21 +119,10 @@ jobs:
             ls -la /opt/pi32/upstream/bin/pi32-clang
           fi
 
-          # FIX: Check if clang symlink is broken and try to fix
-          if [ -L /opt/pi32/upstream/bin/clang ] && [ ! -e /opt/pi32/upstream/bin/clang ]; then
-            echo "=== clang symlink is broken ==="
-            echo "Target: $(readlink /opt/pi32/upstream/bin/clang)"
-            # Check if there's a real clang binary somewhere
-            REAL_CLANG=$(find /opt/pi32 -name "clang" -type f 2>/dev/null | head -1)
-            if [ -n "$REAL_CLANG" ]; then
-              echo "Found real clang at: $REAL_CLANG"
-              sudo rm /opt/pi32/upstream/bin/clang
-              sudo ln -sf "$REAL_CLANG" /opt/pi32/upstream/bin/clang
-            else
-              echo "No real clang binary found in toolchain"
-              echo "The cc wrapper may work independently"
-            fi
-          fi
+          # Final verification: test that cc wrapper can find clang
+          echo "=== Final toolchain verification ==="
+          /opt/pi32/upstream/bin/cc --version 2>&1 || echo "cc --version failed (may need PATH setup)"
+          find /opt/pi32 -type f -executable -not -name '._*' 2>/dev/null | sort
 
       - name: Extract SDK source
         run: |
