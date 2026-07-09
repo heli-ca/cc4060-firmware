@@ -16,6 +16,10 @@ def patch_uart_c(filepath):
     with open(filepath, 'r') as f:
         content = f.read()
 
+    # Ensure CC4060_UART_BRIDGE_EN is defined in this file
+    if '#define CC4060_UART_BRIDGE_EN' not in content:
+        content = '#define CC4060_UART_BRIDGE_EN 1\n' + content
+
     # ---- Block 1: CC4060 bridge implementation ----
     # Insert after #endif //end of UART update, before void uart_module_init()
     cc4060_block = r"""
@@ -141,6 +145,11 @@ def patch_le_rcsp_module_c(filepath):
     with open(filepath, 'r') as f:
         content = f.read()
 
+    # ---- Block 0: Ensure CC4060_UART_BRIDGE_EN is defined in this file ----
+    # le_rcsp_module.c may not include sdk_cfg.h, so we add the define directly
+    if '#define CC4060_UART_BRIDGE_EN' not in content:
+        content = '#define CC4060_UART_BRIDGE_EN 1\n' + content
+
     # ---- Block 1: Extern declarations ----
     # Insert before const u8 link_key_data[16]
     extern_block = r"""
@@ -236,26 +245,6 @@ def patch_sdk_cfg_h(filepath):
     return True
 
 
-def patch_auto_test_c(filepath, sdk_root):
-    """Remove auto_test/auto_test.c from SRCS_C in apps/Makefile to avoid pi32-clang incompatibility"""
-    makefile_path = os.path.join(sdk_root, 'apps', 'Makefile')
-    if not os.path.exists(makefile_path):
-        print("SKIP: apps/Makefile not found")
-        return True
-    with open(makefile_path, 'r') as f:
-        content = f.read()
-    # Remove the auto_test/auto_test.c line from SRCS_C entirely
-    # (can't use # comment with \ continuation - breaks Makefile syntax)
-    patched = content.replace('auto_test/auto_test.c \\\n', '')
-    if patched != content:
-        with open(makefile_path, 'w') as f:
-            f.write(patched)
-        print("OK: Removed auto_test/auto_test.c from SRCS_C in apps/Makefile")
-    else:
-        print("OK: auto_test/auto_test.c already removed from SRCS_C or not found")
-    return True
-
-
 def main():
     sdk_root = sys.argv[1] if len(sys.argv) > 1 else '.'
 
@@ -282,10 +271,6 @@ def main():
     if not patch_le_rcsp_module_c(files['le_rcsp_module.c']):
         ok = False
     if not patch_sdk_cfg_h(files['sdk_cfg.h']):
-        ok = False
-
-    # Remove auto_test.c from SRCS_C (incompatible with pi32-clang)
-    if not patch_auto_test_c(None, sdk_root):
         ok = False
 
     if not ok:
