@@ -286,7 +286,7 @@ def main():
         ok = False
 
     # Patch auto_test.c (not in the files dict, separate path)
-    auto_test_path = os.path.join(sdk_root, 'apps', 'cpu', 'auto_test', 'auto_test.c')
+    auto_test_path = os.path.join(sdk_root, 'apps', 'auto_test', 'auto_test.c')
     if not patch_auto_test_c(auto_test_path):
         ok = False
 
