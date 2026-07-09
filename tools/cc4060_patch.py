@@ -236,24 +236,25 @@ def patch_sdk_cfg_h(filepath):
     return True
 
 
-def patch_auto_test_c(filepath):
-    """Disable IRQ_REGISTER calls in auto_test.c (incompatible with pi32-clang)"""
-    if not os.path.exists(filepath):
-        print("SKIP: auto_test.c not found")
+def patch_auto_test_c(filepath, sdk_root):
+    """Remove auto_test/auto_test.c from SRCS_C in apps/Makefile to avoid pi32-clang incompatibility"""
+    makefile_path = os.path.join(sdk_root, 'apps', 'Makefile')
+    if not os.path.exists(makefile_path):
+        print("SKIP: apps/Makefile not found")
         return True
-    with open(filepath, 'r') as f:
-        lines = f.readlines()
-    patched = 0
-    for i, line in enumerate(lines):
-        if 'IRQ_REGISTER(' in line and not line.strip().startswith('//'):
-            lines[i] = '// CC4060: disabled (pi32-clang incompatible with interrupt attribute)\n// ' + line
-            patched += 1
-    if patched > 0:
-        with open(filepath, 'w') as f:
-            f.writelines(lines)
-        print(f"OK: auto_test.c - commented out {patched} IRQ_REGISTER call(s)")
+    with open(makefile_path, 'r') as f:
+        content = f.read()
+    # Comment out the auto_test/auto_test.c line in SRCS_C
+    patched = content.replace(
+        'auto_test/auto_test.c \\\n',
+        '# auto_test/auto_test.c \\  # CC4060: disabled (pi32-clang incompatible)\n'
+    )
+    if patched != content:
+        with open(makefile_path, 'w') as f:
+            f.write(patched)
+        print("OK: Removed auto_test/auto_test.c from SRCS_C in apps/Makefile")
     else:
-        print("OK: auto_test.c - no IRQ_REGISTER calls found")
+        print("OK: auto_test/auto_test.c already removed from SRCS_C or not found")
     return True
 
 
@@ -285,9 +286,8 @@ def main():
     if not patch_sdk_cfg_h(files['sdk_cfg.h']):
         ok = False
 
-    # Patch auto_test.c (not in the files dict, separate path)
-    auto_test_path = os.path.join(sdk_root, 'apps', 'auto_test', 'auto_test.c')
-    if not patch_auto_test_c(auto_test_path):
+    # Remove auto_test.c from SRCS_C (incompatible with pi32-clang)
+    if not patch_auto_test_c(None, sdk_root):
         ok = False
 
     if not ok:
