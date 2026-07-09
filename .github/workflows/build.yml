@@ -23,30 +23,30 @@ jobs:
           echo "Workspace: ${{ github.workspace }}"
           ls -la ${{ github.workspace }}/
           echo "---"
-          # Check tarball existence and sizes
           ls -lh ${{ github.workspace }}/pi32v2_toolchain.tar.gz 2>/dev/null || echo "TOOLCHAIN TARBALL MISSING"
           ls -lh ${{ github.workspace }}/sdk_ac692x.tar.gz 2>/dev/null || echo "SDK TARBALL MISSING"
-          file ${{ github.workspace }}/pi32v2_toolchain.tar.gz 2>/dev/null || true
-          file ${{ github.workspace }}/sdk_ac692x.tar.gz 2>/dev/null || true
 
+      # Save our custom repo files before SDK extraction overwrites them
       - name: Save repo build files to /tmp
         run: |
           set -x
           mkdir -p /tmp/cc4060_build
-          cp ${{ github.workspace }}/tools/rule.mk /tmp/cc4060_build/ 2>/dev/null || true
+          cp ${{ github.workspace }}/tools/rule.mk /tmp/cc4060_build/
           cp ${{ github.workspace }}/tools/cc4060_patch.py /tmp/cc4060_build/ 2>/dev/null || true
           cp ${{ github.workspace }}/tools/bfu_builder.py /tmp/cc4060_build/ 2>/dev/null || true
-          cp ${{ github.workspace }}/build.sh /tmp/cc4060_build/ 2>/dev/null || true
           ls -la /tmp/cc4060_build/
 
-      - name: Install Wine for Windows tools
+      # CRITICAL FIX #1: Install wine32 (isd_download.exe is 32-bit PE)
+      - name: Install Wine (32-bit + 64-bit) and build tools
         run: |
+          set -x
           sudo dpkg --add-architecture i386
           sudo apt-get update -qq
-          sudo apt-get install -y -qq wine64 2>/dev/null || true
-          wine64 --version || echo "Wine not available"
-          
-          # Install LLVM tools (includes llvm-objcopy for ELF processing)
+          sudo apt-get install -y -qq wine wine32 wine64 2>&1 | tail -5
+          wine --version 2>/dev/null || echo "wine (32-bit) not available"
+          wine64 --version 2>/dev/null || echo "wine64 not available"
+
+          # Install LLVM tools (llvm-objcopy for ELF processing)
           sudo apt-get install -y -qq llvm 2>/dev/null || true
           llvm-objcopy --version 2>/dev/null || echo "llvm-objcopy not available"
 
@@ -54,148 +54,149 @@ jobs:
         run: |
           set -x
           sudo mkdir -p /opt/pi32/upstream
-          
-          # Extract toolchain
+
           cd ${{ github.workspace }}
           tar -tzf pi32v2_toolchain.tar.gz | head -20
           echo "---"
           sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/upstream
-          
-          # CRITICAL: Remove macOS AppleDouble ._ metadata files first
-          # These pollute the tarball and break directory detection
+
+          # Remove macOS AppleDouble ._ metadata files
           echo "=== Cleaning macOS metadata files ==="
           sudo find /opt/pi32/upstream -name '._*' -type f -delete 2>/dev/null || true
           sudo find /opt/pi32/upstream -name '._*' -type d -delete 2>/dev/null || true
-          echo "Cleaned. Remaining contents:"
-          ls -la /opt/pi32/upstream/
-          
-          # Find the real top-level directory (skip ._ files)
+
+          # Find the real top-level directory
           FIRST_DIR=$(tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | head -1 | cut -d/ -f1)
           echo "First real directory in tarball: $FIRST_DIR"
-          
-          # If tarball has a top-level dir like pi32v2/, move contents up
+
           if [ -d "/opt/pi32/upstream/$FIRST_DIR" ] && [ "$FIRST_DIR" != "bin" ] && [ "$FIRST_DIR" != "lib" ] && [ "$FIRST_DIR" != "include" ]; then
             echo "Moving contents of /opt/pi32/upstream/$FIRST_DIR/ up one level"
             sudo mv /opt/pi32/upstream/$FIRST_DIR/* /opt/pi32/upstream/ 2>/dev/null || true
             sudo rmdir /opt/pi32/upstream/$FIRST_DIR 2>/dev/null || true
           fi
-          
+
           echo "=== Toolchain layout ==="
           ls -la /opt/pi32/upstream/
           ls -la /opt/pi32/upstream/bin/ || echo "bin/ not found!"
-          
-          echo "=== All toolchain binaries ==="
           find /opt/pi32 -type f -executable -not -name '._*' 2>/dev/null | sort
-          
           file /opt/pi32/upstream/bin/clang 2>/dev/null || echo "clang not found!"
-          file /opt/pi32/upstream/bin/objcopy 2>/dev/null || echo "objcopy not found!"
 
       - name: Extract SDK source
         run: |
           set -x
           cd ${{ github.workspace }}
-          
-          # Check tarball structure
+
           tar -tzf sdk_ac692x.tar.gz | head -20
           echo "---"
-          
-          # Extract to temp directory first
+
           mkdir -p /tmp/sdk_extract
           tar xzf sdk_ac692x.tar.gz -C /tmp/sdk_extract
-          
-          # Find the actual SDK root (might be flat or have a top-level dir)
+
           if [ -d "/tmp/sdk_extract/apps" ]; then
             SDK_SRC="/tmp/sdk_extract"
-            echo "SDK extracted flat"
           else
             FIRST_DIR=$(ls /tmp/sdk_extract/ | head -1)
             SDK_SRC="/tmp/sdk_extract/$FIRST_DIR"
-            echo "SDK in top-level dir: $FIRST_DIR"
           fi
-          
-          # Verify SDK source has apps/
+
           if [ ! -d "$SDK_SRC/apps" ]; then
             echo "ERROR: apps/ not found in extracted SDK"
             ls -la $SDK_SRC/
             exit 1
           fi
-          
-          # Copy SDK files to workspace (merge, don't overwrite existing files)
-          # Use rsync to merge directories without overwriting repo files
+
+          # Merge SDK into workspace (don't overwrite existing repo files)
           rsync -a --ignore-existing "$SDK_SRC/" ${{ github.workspace }}/
-          
+
           echo "=== SDK layout ==="
           ls -la ${{ github.workspace }}/apps/ | head -20
           ls ${{ github.workspace }}/tools/ | head -10
-          
-          # Cleanup
           rm -rf /tmp/sdk_extract
 
-      - name: Install build rules and restore repo files
+      # Restore our custom files AND create symlink for compiler Makefile
+      - name: Install build rules and create symlinks
         run: |
           set -x
-          # Restore build files from /tmp backup (SDK extraction may have overwritten tools/)
+          # Restore custom build files from /tmp
           mkdir -p ${{ github.workspace }}/tools
           cp /tmp/cc4060_build/rule.mk ${{ github.workspace }}/tools/rule.mk
           cp /tmp/cc4060_build/cc4060_patch.py ${{ github.workspace }}/tools/cc4060_patch.py 2>/dev/null || true
           cp /tmp/cc4060_build/bfu_builder.py ${{ github.workspace }}/tools/bfu_builder.py 2>/dev/null || true
-          cp /tmp/cc4060_build/build.sh ${{ github.workspace }}/build.sh 2>/dev/null || true
-          echo "Build files restored"
-          ls -la ${{ github.workspace }}/tools/rule.mk
+
+          echo "=== rule.mk contents ==="
           cat ${{ github.workspace }}/tools/rule.mk
+
+          # CRITICAL: apps/Makefile includes tools/compiler/Makefile.pi32_lto
+          # When running from apps/, this resolves to apps/tools/compiler/...
+          # Create symlink so apps/tools -> repo_root/tools
+          ln -sf ${{ github.workspace }}/tools ${{ github.workspace }}/apps/tools
+          echo "=== Symlink created ==="
+          ls -la ${{ github.workspace }}/apps/tools
+          ls -la ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto
 
       - name: Apply CC4060 UART bridge patch
         run: |
           set -x
           python3 tools/cc4060_patch.py ${{ github.workspace }}
-          
+
           echo "=== Verify patches ==="
           grep -n "CC4060" ${{ github.workspace }}/apps/cpu/uart/uart.c | head -5
           grep -n "CC4060" ${{ github.workspace }}/apps/ble_stack/user/le_rcsp_module.c | head -5
           grep -n "CC4060" ${{ github.workspace }}/apps/include/sdk_cfg.h | head -5
 
+      # CRITICAL FIX #2: Correct build command
+      # make -C apps uses apps/Makefile as entry point (has SRCS_C, LIBS, etc.)
+      # MAKE_RULE override points to our rule.mk with compile/link rules
       - name: Build firmware
         run: |
           set -x
           cd ${{ github.workspace }}
-          
-          echo "=== Starting build ==="
+
+          echo "=== Build configuration ==="
           echo "Make version: $(make --version | head -1)"
           echo "Working dir: $(pwd)"
-          
-          make HOST_OS=linux SLASH=/ \
-            -f tools/platform/Makefile.br21 \
-            2>&1 | tail -300
-          
+          echo "MAKE_RULE: ${{ github.workspace }}/tools/rule.mk"
+          echo "Source files: $(grep -c '\.c \\' apps/Makefile) C files"
+
+          # Run make from apps/ directory
+          # All exported vars (CC, LD, CC_ARGS, LD_ARGS, etc.) are inherited
+          make -C apps \
+            HOST_OS=linux SLASH=/ \
+            MAKE_RULE=${{ github.workspace }}/tools/rule.mk \
+            2>&1 | tail -500
+
           echo "=== Build output ==="
+          ls -la apps/download/post_build/flash/ 2>/dev/null || echo "Output dir NOT FOUND"
           ls -la apps/download/post_build/flash/sdk.exe 2>/dev/null || echo "sdk.exe NOT FOUND"
+
+          # Check if sdk.exe is freshly built (not the 2019 pre-compiled one)
+          if [ -f apps/download/post_build/flash/sdk.exe ]; then
+            file apps/download/post_build/flash/sdk.exe
+            stat apps/download/post_build/flash/sdk.exe
+          fi
 
       - name: Post-build objcopy
         run: |
           set -x
           OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
           cd "$OUTPUT_DIR"
-          
+
           echo "=== Checking sdk.exe ==="
           ls -la sdk.exe
           file sdk.exe
-          
-          # Try llvm-objcopy first (installed via apt), then toolchain's objcopy
+
+          # Try llvm-objcopy first, then toolchain's objcopy
           OBJCOPY=""
           if command -v llvm-objcopy &>/dev/null; then
             OBJCOPY="llvm-objcopy"
             echo "Using llvm-objcopy from system"
           else
-            # Search toolchain
             for candidate in /opt/pi32/upstream/bin/objcopy /opt/pi32/upstream/bin/pi32-objcopy; do
               if [ -x "$candidate" ]; then OBJCOPY="$candidate"; break; fi
             done
-            if [ -z "$OBJCOPY" ]; then
-              OBJCOPY=$(find /opt/pi32 -name "*objcopy*" -type f -not -name '._*' 2>/dev/null | head -1)
-            fi
           fi
-          
-          if [ -n "$OBJCOPY" ] && command -v "$OBJCOPY" &>/dev/null || [ -x "$OBJCOPY" ]; then
+
+          if [ -n "$OBJCOPY" ]; then
             echo "Using objcopy: $OBJCOPY"
             $OBJCOPY -O binary -j .text  sdk.exe sdk.bin 2>&1 || true
             $OBJCOPY -O binary -j .data  sdk.exe data.bin 2>&1 || true
@@ -204,20 +205,15 @@ jobs:
             echo "No objcopy available, using Python ELF parser"
             python3 -c "
           import struct, sys
-          
+
           def extract_elf_sections(filename):
               with open(filename, 'rb') as f:
                   data = f.read()
-              
-              # ELF header
               if data[:4] != b'\x7fELF':
                   print('Not an ELF file!')
                   sys.exit(1)
-              
-              ei_class = data[4]  # 1=32bit, 2=64bit
-              ei_data = data[5]   # 1=LE, 2=BE
-              
-              if ei_class == 1:  # 32-bit
+              ei_class = data[4]
+              if ei_class == 1:
                   e_shoff = struct.unpack_from('<I', data, 32)[0]
                   e_shentsize = struct.unpack_from('<H', data, 46)[0]
                   e_shnum = struct.unpack_from('<H', data, 48)[0]
@@ -227,28 +223,20 @@ jobs:
                   e_shentsize = struct.unpack_from('<H', data, 58)[0]
                   e_shnum = struct.unpack_from('<H', data, 60)[0]
                   e_shstrndx = struct.unpack_from('<H', data, 62)[0]
-              
-              # Read section headers
               sections = {}
               for i in range(e_shnum):
                   off = e_shoff + i * e_shentsize
                   if ei_class == 1:
                       sh_name = struct.unpack_from('<I', data, off)[0]
-                      sh_type = struct.unpack_from('<I', data, off+4)[0]
                       sh_offset = struct.unpack_from('<I', data, off+16)[0]
                       sh_size = struct.unpack_from('<I', data, off+20)[0]
                   else:
                       sh_name = struct.unpack_from('<I', data, off)[0]
-                      sh_type = struct.unpack_from('<I', data, off+4)[0]
                       sh_offset = struct.unpack_from('<Q', data, off+24)[0]
                       sh_size = struct.unpack_from('<Q', data, off+32)[0]
-                  sections[i] = {'name_off': sh_name, 'type': sh_type, 'offset': sh_offset, 'size': sh_size}
-              
-              # Read section name string table
+                  sections[i] = {'name_off': sh_name, 'offset': sh_offset, 'size': sh_size}
               strtab = sections[e_shstrndx]
               strtab_data = data[strtab['offset']:strtab['offset']+strtab['size']]
-              
-              # Resolve names and extract target sections
               result = {}
               for idx, sec in sections.items():
                   name_end = strtab_data.find(b'\x00', sec['name_off'])
@@ -256,55 +244,63 @@ jobs:
                   if name in ('.text', '.data', '.nvdata'):
                       section_data = data[sec['offset']:sec['offset']+sec['size']]
                       result[name] = section_data
-                      print(f'  {name}: {len(section_data)} bytes at offset 0x{sec[\"offset\"]:x}')
-              
+                      print(f'  {name}: {len(section_data)} bytes')
               return result
-          
+
           sections = extract_elf_sections('sdk.exe')
-          
-          if '.text' in sections:
-              with open('sdk.bin', 'wb') as f:
-                  f.write(sections['.text'])
-          if '.data' in sections:
-              with open('data.bin', 'wb') as f:
-                  f.write(sections['.data'])
-          if '.nvdata' in sections:
-              with open('nvdata.bin', 'wb') as f:
-                  f.write(sections['.nvdata'])
-          
-          print(f'Extracted sections: {list(sections.keys())}')
+          for name, data in sections.items():
+              with open(name + '.bin', 'wb') as f:
+                  f.write(data)
+          print(f'Extracted: {list(sections.keys())}')
             "
           fi
-          
+
           # Combine into sdk.app
           cat sdk.bin data.bin nvdata.bin > sdk.app 2>/dev/null || cat sdk.bin > sdk.app
           echo "sdk.app size: $(stat -c%s sdk.app) bytes"
-          ls -la sdk.app
+          ls -la sdk.app sdk.bin data.bin nvdata.bin 2>/dev/null || true
 
+      # CRITICAL FIX #3: Create uboot.boot and run isd_download.exe with wine (32-bit)
       - name: Generate firmware image with isd_download
         run: |
           set -x
           OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
           cd "$OUTPUT_DIR"
-          
+
           # Find isd_download.exe in SDK
           ISD_EXE=$(find ${{ github.workspace }} -name "isd_download.exe" -type f 2>/dev/null | head -1)
-          
+
           if [ -z "$ISD_EXE" ] || [ ! -f "$ISD_EXE" ]; then
             echo "WARNING: isd_download.exe not found in SDK"
-            echo "Will use sdk.app directly for BFU packaging"
+            echo "Falling back to sdk.app as firmware image"
             cp sdk.app jl_isd.bin
-            echo "jl_isd.bin (copy of sdk.app) size: $(stat -c%s jl_isd.bin) bytes"
             exit 0
           fi
-          
+
           echo "Using: $ISD_EXE"
           file "$ISD_EXE"
-          
-          # Find uboot.boot
-          UBOOT=$(find ${{ github.workspace }} -name "uboot.boot" -type f 2>/dev/null | head -1)
-          echo "uboot.boot: ${UBOOT:-NOT FOUND}"
-          
+
+          # Find or create uboot.boot
+          UBOOT_BIN=$(find ${{ github.workspace }} -name "uboot.bin" -type f 2>/dev/null | head -1)
+          UBOOT_BOOT=$(find ${{ github.workspace }} -name "uboot.boot" -type f 2>/dev/null | head -1)
+
+          if [ -z "$UBOOT_BOOT" ] && [ -n "$UBOOT_BIN" ]; then
+            echo "Creating uboot.boot from uboot.bin"
+            cp "$UBOOT_BIN" uboot.boot
+            UBOOT_BOOT=uboot.boot
+          fi
+
+          if [ -z "$UBOOT_BOOT" ]; then
+            echo "WARNING: uboot.boot/uboot.bin not found"
+            echo "Trying isd_download without bootloader..."
+          fi
+
+          echo "uboot.boot: ${UBOOT_BOOT:-NOT FOUND}"
+
+          # Find bt_cfg.bin
+          BT_CFG=$(find ${{ github.workspace }} -name "bt_cfg.bin" -type f 2>/dev/null | head -1)
+          echo "bt_cfg.bin: ${BT_CFG:-NOT FOUND}"
+
           # Build resource list
           RESOURCES=""
           for f in bt.mp3 music.mp3 linein.mp3 radio.mp3 connect.mp3 disconnect.mp3 \
@@ -313,20 +309,44 @@ jobs:
             [ -f "$f" ] && RESOURCES="$RESOURCES $f"
           done
           echo "Resources: ${RESOURCES:-none}"
-          
-          # Try isd_download under Wine
+
+          # Initialize Wine (create prefix, suppress first-run dialogs)
+          echo "=== Initializing Wine ==="
+          WINEDEBUG=-all wineboot --init 2>/dev/null || true
+
+          # Run isd_download.exe under Wine (32-bit)
           SUCCESS=0
-          if [ -n "$UBOOT" ]; then
-            wine64 "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
-              -format cfg -f "$UBOOT" sdk.app bt_cfg.bin $RESOURCES 2>&1 && SUCCESS=1 || true
+          if [ -n "$UBOOT_BOOT" ]; then
+            echo "=== Running isd_download.exe ==="
+            WINEDEBUG=-all wine "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
+              -format cfg -f "$UBOOT_BOOT" sdk.app bt_cfg.bin $RESOURCES 2>&1 && SUCCESS=1 || true
           fi
-          
+
           if [ "$SUCCESS" -eq 0 ]; then
-            echo "isd_download via Wine failed or not available"
+            echo "isd_download via Wine failed, trying without bootloader..."
+            WINEDEBUG=-all wine "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
+              sdk.app 2>&1 || true
+          fi
+
+          # Check for output files (isd_download.exe may produce various filenames)
+          echo "=== Checking for firmware output ==="
+          ls -la *.bin *.hex *.bfu *.img 2>/dev/null || echo "No firmware files found"
+
+          # Find the output file (isd_download.exe typically produces jl_isd.bin or similar)
+          if [ -f "jl_isd.bin" ]; then
+            echo "Found jl_isd.bin"
+          elif [ -f "isd_output.bin" ]; then
+            cp isd_output.bin jl_isd.bin
+            echo "Copied isd_output.bin -> jl_isd.bin"
+          elif [ -f "firmware.bin" ]; then
+            cp firmware.bin jl_isd.bin
+            echo "Copied firmware.bin -> jl_isd.bin"
+          else
+            echo "isd_download did not produce expected output"
             echo "Falling back to sdk.app as firmware image"
             cp sdk.app jl_isd.bin
           fi
-          
+
           echo "=== Firmware image ==="
           ls -la jl_isd.bin
           echo "jl_isd.bin size: $(stat -c%s jl_isd.bin) bytes"
@@ -336,64 +356,49 @@ jobs:
           set -x
           OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
           cd "$OUTPUT_DIR"
-          
-          # Verify input exists
+
           if [ ! -f jl_isd.bin ]; then
             echo "ERROR: jl_isd.bin not found"
             ls -la
             exit 1
           fi
-          
+
           BFU_BUILDER=${{ github.workspace }}/tools/bfu_builder.py
-          
-          if [ -f "$BFU_BUILDER" ]; then
-            echo "Using bfu_builder.py"
-            python3 "$BFU_BUILDER" build jl_isd.bin updata.bfu 2>&1 || {
-              echo "bfu_builder.py build failed, trying inline BFU creation..."
-              # Inline BFU creation: JL_UDFIR header + 512-byte header + payload
-              python3 -c "
-          import struct, sys
-          payload = open('jl_isd.bin','rb').read()
-          hdr = bytearray(512)
-          hdr[0:8] = b'JL_UDFIR'
-          struct.pack_into('<I', hdr, 8, 0xAE3A)   # device ID
-          struct.pack_into('<I', hdr, 12, len(payload))
-          struct.pack_into('<I', hdr, 16, 0)        # flags
-          with open('updata.bfu','wb') as f:
-              f.write(hdr)
-              f.write(payload)
-          print(f'Inline BFU: {len(payload)} bytes payload')
-              "
-            }
-          else
-            echo "bfu_builder.py not found, using inline BFU creation"
+
+          python3 "$BFU_BUILDER" build jl_isd.bin updata.bfu 2>&1 || {
+            echo "bfu_builder.py failed, using inline BFU creation..."
             python3 -c "
           import struct
           payload = open('jl_isd.bin','rb').read()
           hdr = bytearray(512)
           hdr[0:8] = b'JL_UDFIR'
-          struct.pack_into('<I', hdr, 8, 0xAE3A)
-          struct.pack_into('<I', hdr, 12, len(payload))
-          struct.pack_into('<I', hdr, 16, 0)
+          struct.pack_into('>I', hdr, 0x08, 0x20)
+          struct.pack_into('>I', hdr, 0x0C, 0x000076C0)
+          struct.pack_into('>I', hdr, 0x10, 0x200)
+          struct.pack_into('>I', hdr, 0x14, len(payload))
+          struct.pack_into('>I', hdr, 0x18, 0)
+          hdr[0x24:0x30] = b'JL_692X.BIN\x00'
           with open('updata.bfu','wb') as f:
               f.write(hdr)
               f.write(payload)
           print(f'Inline BFU: {len(payload)} bytes payload')
             "
-          fi
-          
+          }
+
           if [ ! -f updata.bfu ]; then
             echo "ERROR: Failed to create updata.bfu"
             exit 1
           fi
-          
+
           echo "=== Final firmware ==="
           ls -la updata.bfu
           echo "BFU size: $(stat -c%s updata.bfu) bytes"
-          xxd updata.bfu | head -5
-          echo ""
-          echo "First 16 bytes (hex):"
-          xxd -l 16 updata.bfu
+          echo "First 64 bytes (hex):"
+          xxd -l 64 updata.bfu
+
+          # Verify BFU
+          python3 "$BFU_BUILDER" verify updata.bfu 2>&1 || true
+          python3 "$BFU_BUILDER" info updata.bfu 2>&1 || true
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
@@ -411,4 +416,5 @@ jobs:
             ${{ github.workspace }}/apps/download/post_build/flash/sdk.map
             ${{ github.workspace }}/apps/download/post_build/flash/sdk.exe
             ${{ github.workspace }}/apps/download/post_build/flash/sdk.app
+            ${{ github.workspace }}/apps/download/post_build/flash/jl_isd.bin
           retention-days: 7
