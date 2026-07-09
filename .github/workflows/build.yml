@@ -29,6 +29,16 @@ jobs:
           file ${{ github.workspace }}/pi32v2_toolchain.tar.gz 2>/dev/null || true
           file ${{ github.workspace }}/sdk_ac692x.tar.gz 2>/dev/null || true
 
+      - name: Save repo build files to /tmp
+        run: |
+          set -x
+          mkdir -p /tmp/cc4060_build
+          cp ${{ github.workspace }}/tools/rule.mk /tmp/cc4060_build/ 2>/dev/null || true
+          cp ${{ github.workspace }}/tools/cc4060_patch.py /tmp/cc4060_build/ 2>/dev/null || true
+          cp ${{ github.workspace }}/tools/bfu_builder.py /tmp/cc4060_build/ 2>/dev/null || true
+          cp ${{ github.workspace }}/build.sh /tmp/cc4060_build/ 2>/dev/null || true
+          ls -la /tmp/cc4060_build/
+
       - name: Install Wine for Windows tools
         run: |
           sudo dpkg --add-architecture i386
@@ -74,32 +84,49 @@ jobs:
           tar -tzf sdk_ac692x.tar.gz | head -20
           echo "---"
           
-          tar xzf sdk_ac692x.tar.gz -C ${{ github.workspace }}
+          # Extract to temp directory first
+          mkdir -p /tmp/sdk_extract
+          tar xzf sdk_ac692x.tar.gz -C /tmp/sdk_extract
           
-          # Check if SDK extracted with a top-level directory
-          if [ -d "${{ github.workspace }}/apps" ]; then
-            echo "SDK extracted flat (apps/ at workspace root)"
+          # Find the actual SDK root (might be flat or have a top-level dir)
+          if [ -d "/tmp/sdk_extract/apps" ]; then
+            SDK_SRC="/tmp/sdk_extract"
+            echo "SDK extracted flat"
           else
-            # Find the actual SDK root
-            FIRST_DIR=$(tar -tzf sdk_ac692x.tar.gz | head -1 | cut -d/ -f1)
-            echo "SDK extracted to: $FIRST_DIR"
-            if [ -d "${{ github.workspace }}/$FIRST_DIR/apps" ]; then
-              echo "Moving SDK contents to workspace root"
-              mv ${{ github.workspace }}/$FIRST_DIR/* ${{ github.workspace }}/ 2>/dev/null || true
-              mv ${{ github.workspace }}/$FIRST_DIR/.* ${{ github.workspace }}/ 2>/dev/null || true
-              rmdir ${{ github.workspace }}/$FIRST_DIR 2>/dev/null || true
-            fi
+            FIRST_DIR=$(ls /tmp/sdk_extract/ | head -1)
+            SDK_SRC="/tmp/sdk_extract/$FIRST_DIR"
+            echo "SDK in top-level dir: $FIRST_DIR"
           fi
+          
+          # Verify SDK source has apps/
+          if [ ! -d "$SDK_SRC/apps" ]; then
+            echo "ERROR: apps/ not found in extracted SDK"
+            ls -la $SDK_SRC/
+            exit 1
+          fi
+          
+          # Copy SDK files to workspace (merge, don't overwrite existing files)
+          # Use rsync to merge directories without overwriting repo files
+          rsync -a --ignore-existing "$SDK_SRC/" ${{ github.workspace }}/
           
           echo "=== SDK layout ==="
           ls -la ${{ github.workspace }}/apps/ | head -20
           ls ${{ github.workspace }}/tools/ | head -10
+          
+          # Cleanup
+          rm -rf /tmp/sdk_extract
 
-      - name: Install build rules
+      - name: Install build rules and restore repo files
         run: |
           set -x
-          cp tools/rule.mk ${{ github.workspace }}/tools/rule.mk
-          echo "rule.mk installed"
+          # Restore build files from /tmp backup (SDK extraction may have overwritten tools/)
+          mkdir -p ${{ github.workspace }}/tools
+          cp /tmp/cc4060_build/rule.mk ${{ github.workspace }}/tools/rule.mk
+          cp /tmp/cc4060_build/cc4060_patch.py ${{ github.workspace }}/tools/cc4060_patch.py 2>/dev/null || true
+          cp /tmp/cc4060_build/bfu_builder.py ${{ github.workspace }}/tools/bfu_builder.py 2>/dev/null || true
+          cp /tmp/cc4060_build/build.sh ${{ github.workspace }}/build.sh 2>/dev/null || true
+          echo "Build files restored"
+          ls -la ${{ github.workspace }}/tools/rule.mk
           cat ${{ github.workspace }}/tools/rule.mk
 
       - name: Apply CC4060 UART bridge patch
