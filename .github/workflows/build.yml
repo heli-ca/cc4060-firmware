@@ -81,6 +81,58 @@ jobs:
           find /opt/pi32 -type f -executable -not -name '._*' 2>/dev/null | sort
           file /opt/pi32/upstream/bin/clang 2>/dev/null || echo "clang not found!"
 
+          # CRITICAL: Check if common/ directory exists in tarball
+          echo "=== Checking for common/ directory in tarball ==="
+          tar -tzf pi32v2_toolchain.tar.gz | grep -i common | head -20 || echo "No common/ in tarball"
+          tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | cut -d/ -f1 | sort -u
+          echo "=== All top-level entries in tarball ==="
+          tar -tzf pi32v2_toolchain.tar.gz | grep -v '^\._' | grep -E '^[^/]+/?$' | sort -u || true
+
+          # Show cc wrapper script contents
+          echo "=== cc wrapper script ==="
+          cat /opt/pi32/upstream/bin/cc 2>/dev/null || echo "cc not found"
+          echo "=== cxx wrapper script ==="
+          cat /opt/pi32/upstream/bin/cxx 2>/dev/null || echo "cxx not found"
+
+          # Show Makefile.pi32_lto contents (to see CC definition)
+          echo "=== Makefile.pi32_lto contents ==="
+          cat ${{ github.workspace }}/tools/compiler/Makefile.pi32_lto 2>/dev/null || echo "Makefile.pi32_lto not found yet (SDK not extracted)"
+
+          # Check for broken symlinks
+          echo "=== Broken symlinks in toolchain ==="
+          find /opt/pi32/upstream -xtype l 2>/dev/null || true
+
+          # FIX: Create pi32-clang wrapper if it doesn't exist
+          if [ ! -f /opt/pi32/upstream/bin/pi32-clang ] && [ ! -L /opt/pi32/upstream/bin/pi32-clang ]; then
+            echo "=== Creating pi32-clang wrapper ==="
+            # Check if cc is a working wrapper script
+            if file /opt/pi32/upstream/bin/cc | grep -q "script\|text"; then
+              echo "cc is a script, creating pi32-clang as copy of cc"
+              sudo cp /opt/pi32/upstream/bin/cc /opt/pi32/upstream/bin/pi32-clang
+              sudo chmod +x /opt/pi32/upstream/bin/pi32-clang
+            else
+              echo "cc is not a script, creating pi32-clang as symlink to cc"
+              sudo ln -sf cc /opt/pi32/upstream/bin/pi32-clang
+            fi
+            ls -la /opt/pi32/upstream/bin/pi32-clang
+          fi
+
+          # FIX: Check if clang symlink is broken and try to fix
+          if [ -L /opt/pi32/upstream/bin/clang ] && [ ! -e /opt/pi32/upstream/bin/clang ]; then
+            echo "=== clang symlink is broken ==="
+            echo "Target: $(readlink /opt/pi32/upstream/bin/clang)"
+            # Check if there's a real clang binary somewhere
+            REAL_CLANG=$(find /opt/pi32 -name "clang" -type f 2>/dev/null | head -1)
+            if [ -n "$REAL_CLANG" ]; then
+              echo "Found real clang at: $REAL_CLANG"
+              sudo rm /opt/pi32/upstream/bin/clang
+              sudo ln -sf "$REAL_CLANG" /opt/pi32/upstream/bin/clang
+            else
+              echo "No real clang binary found in toolchain"
+              echo "The cc wrapper may work independently"
+            fi
+          fi
+
       - name: Extract SDK source
         run: |
           set -x
@@ -123,26 +175,6 @@ jobs:
           cp /tmp/cc4060_build/cc4060_patch.py ${{ github.workspace }}/tools/cc4060_patch.py 2>/dev/null || true
           cp /tmp/cc4060_build/bfu_builder.py ${{ github.workspace }}/tools/bfu_builder.py 2>/dev/null || true
 
-          # CRITICAL: Copy SDK's compiler and platform Makefiles
-          # These define CC, LD, CC_ARGS, LD_ARGS, SYS_INCLUDES etc.
-          # The SDK tarball has tools/compiler/ and tools/platform/ but our custom tools/ overwrote them
-          # We need to find them in the extracted SDK or re-extract from tarball
-          if [ -d "/tmp/sdk_extract" ]; then
-            SDK_SRC="/tmp/sdk_extract"
-            [ -d "/tmp/sdk_extract/apps" ] || SDK_SRC="/tmp/sdk_extract/$(ls /tmp/sdk_extract/ | head -1)"
-          else
-            # SDK already extracted and merged, look for compiler Makefile in workspace
-            SDK_SRC="${{ github.workspace }}"
-          fi
-
-          # The SDK's tools/ should have been merged into workspace during extraction
-          # Copy compiler/ and platform/ from SDK's tools if they exist
-          if [ -d "${{ github.workspace }}/tools/compiler" ]; then
-            echo "SDK compiler/ already present"
-          else
-            echo "WARNING: tools/compiler/ not found - CC/LD variables will be missing"
-          fi
-
           echo "=== rule.mk contents ==="
           cat ${{ github.workspace }}/tools/rule.mk
 
@@ -152,7 +184,12 @@ jobs:
           ln -sf ${{ github.workspace }}/tools ${{ github.workspace }}/apps/tools
           echo "=== Symlink created ==="
           ls -la ${{ github.workspace }}/apps/tools
-          ls -la ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto 2>/dev/null || echo "WARNING: Makefile.pi32_lto not found!"
+          ls -la ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto
+
+          # CRITICAL: Show Makefile.pi32_lto contents to see CC/LD definitions
+          echo "=== Makefile.pi32_lto contents ==="
+          cat ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto
+          echo "=== End Makefile.pi32_lto ==="
 
       - name: Apply CC4060 UART bridge patch
         run: |
@@ -181,18 +218,6 @@ jobs:
 
           # Verify symlink exists
           ls -la apps/tools/compiler/Makefile.pi32_lto
-
-          # CRITICAL: Delete pre-compiled SDK output files (from 2019) so make rebuilds from source
-          # Without this, make sees sdk.exe already exists and skips compilation entirely
-          echo "=== Removing pre-compiled SDK files ==="
-          rm -f apps/download/post_build/flash/sdk.exe
-          rm -f apps/download/post_build/flash/sdk.app
-          rm -f apps/download/post_build/flash/sdk.bin
-          rm -f apps/download/post_build/flash/data.bin
-          rm -f apps/download/post_build/flash/nvdata.bin
-          rm -f apps/download/post_build/flash/sdk.map
-          rm -rf apps/download/post_build/flash/obj
-          echo "Pre-compiled files removed. make will rebuild from source."
 
           # Run make from apps/ directory with all required platform variables
           # These come from Makefile.br21 and are needed for OUTPUT_EXES, DIR_OUTPUT, etc.
