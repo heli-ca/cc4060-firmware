@@ -1,0 +1,168 @@
+name: Build CC4060 Firmware
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  SDK_ROOT: ${{ github.workspace }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Wine for Windows tools
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wine64 2>/dev/null || true
+          wine64 --version || echo "Wine not available, will try alternatives"
+
+      - name: Setup toolchain
+        run: |
+          sudo mkdir -p /opt/pi32/upstream
+          if [ -f pi32v2_toolchain.tar.gz ]; then
+            sudo tar xzf pi32v2_toolchain.tar.gz -C /opt/pi32/upstream
+            echo "Toolchain extracted"
+          else
+            echo "ERROR: pi32v2_toolchain.tar.gz not found"
+            ls -la
+            exit 1
+          fi
+          ls -la /opt/pi32/upstream/bin/
+          file /opt/pi32/upstream/bin/clang || true
+
+      - name: Extract SDK source
+        run: |
+          if [ -f sdk_ac692x.tar.gz ]; then
+            tar xzf sdk_ac692x.tar.gz -C ${{ github.workspace }}
+            echo "SDK extracted"
+          else
+            echo "ERROR: sdk_ac692x.tar.gz not found"
+            ls -la
+            exit 1
+          fi
+          ls -la ${{ github.workspace }}/apps/ | head -20
+
+      - name: Install build rules
+        run: |
+          cp tools/rule.mk ${{ github.workspace }}/tools/rule.mk
+          echo "rule.mk installed"
+          cat ${{ github.workspace }}/tools/rule.mk
+
+      - name: Apply CC4060 UART bridge patch
+        run: |
+          python3 tools/cc4060_patch.py ${{ github.workspace }}
+
+      - name: Build firmware
+        run: |
+          cd ${{ github.workspace }}
+          make HOST_OS=linux SLASH=/ \
+            -f tools/platform/Makefile.br21 \
+            2>&1 | tail -200
+        continue-on-error: false
+
+      - name: Post-build objcopy
+        run: |
+          OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
+          cd "$OUTPUT_DIR"
+
+          if [ ! -f sdk.exe ]; then
+            echo "ERROR: sdk.exe not found"
+            ls -la
+            exit 1
+          fi
+
+          OBJCOPY=/opt/pi32/upstream/bin/objcopy
+          $OBJCOPY -O binary -j .text  sdk.exe sdk.bin
+          $OBJCOPY -O binary -j .data  sdk.exe data.bin
+          $OBJCOPY -O binary -j .nvdata sdk.exe nvdata.bin
+          cat sdk.bin data.bin nvdata.bin > sdk.app
+          echo "sdk.app size: $(stat -c%s sdk.app) bytes"
+          ls -la sdk.app sdk.exe
+
+      - name: Generate firmware image with isd_download
+        run: |
+          OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
+          cd "$OUTPUT_DIR"
+
+          ISD_EXE="$OUTPUT_DIR/tool_resource/dev_ota/isd_download.exe"
+          if [ ! -f "$ISD_EXE" ]; then
+            ISD_EXE=$(find ${{ github.workspace }} -name "isd_download.exe" 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$ISD_EXE" ] || [ ! -f "$ISD_EXE" ]; then
+            echo "ERROR: isd_download.exe not found"
+            exit 1
+          fi
+
+          echo "Using: $ISD_EXE"
+
+          RESOURCES=""
+          for f in bt.mp3 music.mp3 linein.mp3 radio.mp3 connect.mp3 disconnect.mp3 \
+                   ring.mp3 warning.mp3 power_off.mp3 0.mp3 1.mp3 2.mp3 3.mp3 4.mp3 \
+                   5.mp3 6.mp3 7.mp3 8.mp3 9.mp3 start.mp3; do
+            [ -f "$f" ] && RESOURCES="$RESOURCES $f"
+          done
+
+          wine64 "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
+            -format cfg -f uboot.boot sdk.app bt_cfg.bin $RESOURCES 2>&1 || {
+            echo "isd_download via wine64 failed, trying wine..."
+            wine "$ISD_EXE" -tonorflash -dev br21 -boot 0x2000 -div6 -wait 300 \
+              -format cfg -f uboot.boot sdk.app bt_cfg.bin $RESOURCES 2>&1 || true
+          }
+
+          if [ -f jl_isd.bin ]; then
+            echo "jl_isd.bin created: $(stat -c%s jl_isd.bin) bytes"
+          else
+            echo "ERROR: jl_isd.bin not generated"
+            ls -la
+            exit 1
+          fi
+
+      - name: Package BFU firmware
+        run: |
+          OUTPUT_DIR=${{ github.workspace }}/apps/download/post_build/flash
+          cd "$OUTPUT_DIR"
+
+          BFU_BUILDER=${{ github.workspace }}/tools/bfu_builder.py
+          if [ -f "$BFU_BUILDER" ]; then
+            python3 "$BFU_BUILDER" build jl_isd.bin updata.bfu
+          else
+            BFUMAKE="$OUTPUT_DIR/tool_resource/dev_ota/bfumake.exe"
+            if [ -f "$BFUMAKE" ]; then
+              wine64 "$BFUMAKE" -fi jl_isd.bin -ld 0x0000 -rd 0x0000 -fo updata.bfu || \
+              wine "$BFUMAKE" -fi jl_isd.bin -ld 0x0000 -rd 0x0000 -fo updata.bfu
+            else
+              echo "ERROR: No BFU packaging tool found"
+              exit 1
+            fi
+          fi
+
+          echo "Final firmware:"
+          ls -la updata.bfu
+          file updata.bfu || true
+          xxd updata.bfu | head -5
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: updata.bfu
+          path: ${{ github.workspace }}/apps/download/post_build/flash/updata.bfu
+          retention-days: 30
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ github.workspace }}/apps/download/post_build/flash/sdk.map
+            ${{ github.workspace }}/apps/download/post_build/flash/sdk.ld
+          retention-days: 7
