@@ -1,0 +1,64 @@
+name: Build CC4060 Firmware
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: Download JL pi32 toolchain
+      run: |
+        echo "Downloading Jieli pi32 toolchain..."
+        wget -q https://github.com/libretro/Lakka-LibreELEC/releases/download/v8.2.12a/jieli-linux-toolchains-20250324.1.tar.xz || \
+        wget -q https://github.com/AlexeyGusev/jieli_toolchain/raw/master/pi32v2.tar.gz || \
+        curl -sL https://raw.githubusercontent.com/OpenIPC/firmware/master/general/packages/toolchains/jieli/pi32v2.tar.gz -o pi32v2.tar.gz
+        
+        mkdir -p toolchain
+        tar -xf pi32v2.tar.gz -C toolchain 2>/dev/null || \
+        tar -xf jieli-linux-toolchains-*.tar.xz -C toolchain 2>/dev/null || \
+        echo "Toolchain extraction may need manual verification"
+        
+        # Check if toolchain was extracted correctly
+        ls -la toolchain/ || echo "Toolchain directory contents:"
+        find toolchain -name "pi32-clang" -o -name "cc" 2>/dev/null || echo "Compiler not found yet"
+        
+    - name: Verify toolchain
+      run: |
+        TOOLCHAIN_DIR=$(find toolchain -type d -name "pi32v2" -o -name "pi32" | head -1)
+        if [ -z "$TOOLCHAIN_DIR" ]; then
+          TOOLCHAIN_DIR="toolchain"
+        fi
+        echo "Toolchain path: $TOOLCHAIN_DIR"
+        ls -la "$TOOLCHAIN_DIR/bin/" 2>/dev/null || echo "Bin directory not found"
+        echo "TOOLCHAIN_PATH=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+        
+    - name: Build firmware
+      run: |
+        make TOOLCHAIN_PATH=${{ env.TOOLCHAIN_PATH }}
+        
+    - name: Upload firmware artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cc4060-firmware
+        path: updata.bfu
+        retention-days: 30
+        
+    - name: Display build results
+      if: always()
+      run: |
+        echo "=== Build Complete ==="
+        ls -lh updata.bfu 2>/dev/null || echo "BFU file not generated"
+        echo ""
+        echo "Download the firmware from the Artifacts section above"
