@@ -244,11 +244,9 @@ def patch_auto_test_c(filepath, sdk_root):
         return True
     with open(makefile_path, 'r') as f:
         content = f.read()
-    # Comment out the auto_test/auto_test.c line in SRCS_C
-    patched = content.replace(
-        'auto_test/auto_test.c \\\n',
-        '# auto_test/auto_test.c \\  # CC4060: disabled (pi32-clang incompatible)\n'
-    )
+    # Remove the auto_test/auto_test.c line from SRCS_C entirely
+    # (can't use # comment with \ continuation - breaks Makefile syntax)
+    patched = content.replace('auto_test/auto_test.c \\\n', '')
     if patched != content:
         with open(makefile_path, 'w') as f:
             f.write(patched)
