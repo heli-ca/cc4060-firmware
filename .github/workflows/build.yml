@@ -275,8 +275,7 @@ jobs:
             LINKER="-Tdownload/post_build/flash/sdk.ld -M=download/post_build/flash/sdk.map" \
             LIBS_PATH=libs \
             INCLUDE_LIB_PATH=../include_lib \
-            MAKE_RULE=${{ github.workspace }}/tools/rule.mk \
-            2>&1 | tail -500
+            MAKE_RULE=${{ github.workspace }}/tools/rule.mk
 
           echo "=== Build output ==="
           ls -la apps/download/post_build/flash/ 2>/dev/null || echo "Output dir NOT FOUND"
