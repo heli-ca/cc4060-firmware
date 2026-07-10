@@ -7,7 +7,8 @@
 
 # ---- Include SDK compiler Makefile for CC, LD, CC_ARGS, etc. ----
 # This defines the pi32-clang compiler path, flags, include paths, and linker settings
--include tools/compiler/Makefile.pi32_lto
+# Uses $(ARCH) to select the right compiler Makefile (pi32 = non-LTO, pi32_lto = LTO)
+-include tools/compiler/Makefile.$(ARCH)
 
 # ---- Object files (compiled from SRCS_C defined in apps/Makefile) ----
 OBJS = $(addprefix $(DIR_OUTPUT)/obj/, $(patsubst %.c,%.o, $(SRCS_C)))
