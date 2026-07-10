@@ -169,18 +169,18 @@ jobs:
           echo "=== rule.mk contents ==="
           cat ${{ github.workspace }}/tools/rule.mk
 
-          # CRITICAL: apps/Makefile includes tools/compiler/Makefile.pi32_lto
+          # CRITICAL: apps/Makefile includes tools/compiler/Makefile.$(ARCH)
           # When running from apps/, this resolves to apps/tools/compiler/...
           # Create symlink so apps/tools -> repo_root/tools
           ln -sf ${{ github.workspace }}/tools ${{ github.workspace }}/apps/tools
           echo "=== Symlink created ==="
           ls -la ${{ github.workspace }}/apps/tools
-          ls -la ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto
-
-          # CRITICAL: Show Makefile.pi32_lto contents to see CC/LD definitions
-          echo "=== Makefile.pi32_lto contents ==="
-          cat ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto
-          echo "=== End Makefile.pi32_lto ==="
+          echo "=== Available compiler Makefiles ==="
+          ls -la ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32* 2>/dev/null || echo "No Makefile.pi32* found!"
+          echo "=== Makefile.pi32 contents (non-LTO) ==="
+          cat ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32 2>/dev/null || echo "Makefile.pi32 NOT FOUND — build will fail!"
+          echo "=== Makefile.pi32_lto contents (LTO, for reference) ==="
+          cat ${{ github.workspace }}/apps/tools/compiler/Makefile.pi32_lto 2>/dev/null || echo "Makefile.pi32_lto not found"
 
       - name: Apply CC4060 UART bridge patch
         run: |
@@ -250,14 +250,16 @@ jobs:
           echo "MAKE_RULE: ${{ github.workspace }}/tools/rule.mk"
           echo "Source files: $(grep -c '\.c \\' apps/Makefile) C files"
 
-          # Verify symlink exists
-          ls -la apps/tools/compiler/Makefile.pi32_lto
+          # Verify symlink and compiler Makefile exist
+          ls -la apps/tools/compiler/Makefile.pi32
 
           # Run make from apps/ directory with all required platform variables
           # These come from Makefile.br21 and are needed for OUTPUT_EXES, DIR_OUTPUT, etc.
+          # NOTE: ARCH=pi32 (not pi32_lto) — pre-compiled libraries lack LTO bitcode,
+          # so lto-wrapper rejects them. Non-LTO mode uses regular linker instead.
           make -C apps \
             HOST_OS=linux SLASH=/ \
-            ARCH=pi32_lto \
+            ARCH=pi32 \
             PLATFORM=br21 \
             TYPE=CHIP \
             NICKNAME=br21_sdk \
